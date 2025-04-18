@@ -6,8 +6,6 @@ from dotenv import load_dotenv
 load_dotenv()
 import os
 
-
-
 API_KEY = os.environ.get('API_KEY')
 BASE_URL = os.environ.get('BASE_URL')
 
@@ -201,7 +199,6 @@ btc_price_2020=btc_price_2020[100:]
 btc_price_2020["return"]=btc_price_2020["return"].shift(-1)
 btc_price_2022=btc_price_2020[10000:]
 btc_price_2020_c=btc_price_2020.drop(columns=['time', 'high', 'low', 'open', 'volumefrom', 'volumeto', 'close','vwap'])
-
 from scipy import stats
 import numpy as np
 
@@ -233,7 +230,65 @@ def normal_test(df,column):
     
 for col in btc_price_2020_c.columns:
     normal_test(btc_price_2020_c,col)
+    import pandas as pd
+import numpy as np
+from sklearn.preprocessing import StandardScaler, RobustScaler, QuantileTransformer
+from scipy.stats import skew
 
+def count_outliers_iqr(series):
+    q1 = series.quantile(0.25)
+    q3 = series.quantile(0.75)
+    iqr = q3 - q1
+    lower = q1 - 1.5 * iqr
+    upper = q3 + 1.5 * iqr
+    return ((series < lower) | (series > upper)).sum()
+
+def normalize_features(df, feature_cols=None,exclude='return'):
+    df_transformed = pd.DataFrame(index=df.index)
+    summary = []
+
+    if feature_cols is None:
+        feature_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        feature_cols = [col for col in feature_cols if col != exclude]
+    for col in feature_cols:
+        series = df[col].dropna()
+        if series.nunique() < 2:
+            continue  # skip constant or near-constant columns
+
+        s = skew(series)
+        outliers = count_outliers_iqr(series)
+        method = ""
+
+        # Группа 1: нормальное распределение
+        if abs(s) < 0.3 and outliers < 100:
+            scaler = StandardScaler()
+            df_transformed[col] = scaler.fit_transform(df[[col]])
+            method = "StandardScaler"
+
+        # Группа 2: умеренная скошенность или выбросы
+        elif abs(s) < 10 and outliers < 1000:
+            scaler = RobustScaler()
+            df_transformed[col] = scaler.fit_transform(df[[col]])
+            method = "RobustScaler"
+
+        # Группа 3: сильная скошенность / выбросы
+        else:
+            qt = QuantileTransformer(output_distribution='normal', random_state=42)
+            df_transformed[col] = qt.fit_transform(df[[col]])
+            method = "QuantileTransformer"
+        df_transformed[exclude]=df[exclude]
+        summary.append({
+            "feature": col,
+            "skewness": round(s, 3),
+            "outliers": outliers,
+            "method": method
+        })
+
+    summary_df = pd.DataFrame(summary)
+    return df_transformed
+
+btc_price_2020_n=normalize_features(btc_price_2020_c)
+btc_price_2020_n=btc_price_2020_n.dropna()
 import statsmodels.api as sm
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 def VIF(df):
@@ -253,14 +308,10 @@ def VIF(df):
 
     print(vif_data)
 VIF(btc_price_2020_n)
-
 btc_price_2020_v=btc_price_2020_n.drop(columns=['EMA_30','bb_std','bb_ma','bb_upper','bb_lower','bb_dist_upper','bb_dist_lower','macd'])
-
 VIF(btc_price_2020_v)
-
 btc_price_2020_5=btc_price_2020_v.copy()
 btc_price_2020_5["return"] = pd.qcut(btc_price_2020_5["return"], q=5, labels=False)
-
 import seaborn as sns
 from matplotlib import pyplot as plt
 
@@ -273,7 +324,6 @@ sns.heatmap(correlation_matrix, annot=True, fmt=".2f", cmap='coolwarm', vmin=-1,
 # Показать график  
 plt.title('Корреляционная матрица')  
 plt.show()
-
 from xgboost import XGBClassifier
 import pandas as pd
 from sklearn.preprocessing import LabelEncoder
@@ -314,7 +364,6 @@ def xgb_best_per(df,column):
     y_pred = model_top.predict(X_test_top)
     return importance_df
 xgb_best_per(btc_price_2020_5,'return')
-
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.metrics import classification_report, confusion_matrix
